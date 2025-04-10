@@ -54,9 +54,9 @@
 
     # --- 常量与检查配置 ---
     # 检查网络状态的 URL 列表 (用空格分隔)
-    CHECK_URLS="[https://www.baidu.com/](https://www.baidu.com/) [https://www.qq.com/](https://www.qq.com/) [https://www.sorkai.com/](https://www.sorkai.com/)"
+    CHECK_URLS="https://www.baidu.com/ https://www.qq.com/ https://www.sorkai.com/"
     # 用于触发 302 跳转以获取登录参数的 URL (仍需访问以获取动态参数)
-    PROBE_URL="[http://www.msftconnecttest.com/redirect](http://www.msftconnecttest.com/redirect)"
+    PROBE_URL="http://www.msftconnecttest.com/redirect"
     # 登录接口相对于门户根路径的路径
     LOGIN_URL_PATH="/portalLogin.wlan"
     # 连接超时时间 (秒)
