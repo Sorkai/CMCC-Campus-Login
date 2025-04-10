@@ -3,6 +3,8 @@
 
 **目前脚本仅测试了长春工业大学CMCC移动校园网自动登录情况，理论上吉林省内高校CMCC移动校园网均可使用**
 
+**问题反馈、项目讨论：**  [https://www.sorkai.com/archives/250](https://www.sorkai.com/archives/250)
+
 **AI写文档改脚本真厉害哈哈哈**
 
 ## 1. 概述
@@ -46,12 +48,12 @@
 
     ```sh
     #!/bin/sh
-
+    
     # --- 用户配置 ---
     # 请在此处直接修改你的校园网账号和密码
     USERNAME='YOUR_USERNAME'  # 替换成你的校园网用户名
     PASSWORD='YOUR_PASSWORD'  # 替换成你的校园网密码
-
+    
     # --- 常量与检查配置 ---
     # 检查网络状态的 URL 列表 (用空格分隔)
     CHECK_URLS="https://www.baidu.com/ https://www.qq.com/ https://www.sorkai.com/"
@@ -63,19 +65,19 @@
     CONNECT_TIMEOUT=5
     # 请求总超时时间 (秒)
     MAX_TIME=10
-
+    
     # 日志标签
     LOG_TAG="campus_login"
-
+    
     # 锁文件，防止脚本重复执行
     LOCK_FILE="/var/run/campus_login.lock"
-
+    
     # 检查用户名密码是否已填写
     if [ "$USERNAME" = "YOUR_USERNAME" ] || [ "$PASSWORD" = "YOUR_PASSWORD" ]; then
         logger -t $LOG_TAG "错误：请先在脚本中修改 USERNAME 和 PASSWORD 变量。"
         exit 1
     fi
-
+    
     # --- 锁机制 ---
     if [ -e "$LOCK_FILE" ]; then
         PID=$(cat "$LOCK_FILE")
@@ -89,11 +91,11 @@
     fi
     echo $$ > "$LOCK_FILE"
     trap 'rm -f "$LOCK_FILE"; exit $?' INT TERM EXIT HUP
-
+    
     # --- 检查是否需要登录 ---
     logger -t $LOG_TAG "开始检查网络连接状态..."
     NEED_LOGIN=1 # 默认需要登录 (1 表示需要, 0 表示不需要)
-
+    
     for url in $CHECK_URLS; do
         logger -t $LOG_TAG "尝试访问 $url ..."
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout $CONNECT_TIMEOUT --max-time $MAX_TIME "$url")
@@ -106,15 +108,15 @@
             logger -t $LOG_TAG "访问 $url 失败 (Curl Exit: $CURL_EXIT_CODE, HTTP Code: $HTTP_CODE)。"
         fi
     done
-
+    
     # --- 如果需要登录，则执行登录流程 ---
     if [ $NEED_LOGIN -eq 1 ]; then
         logger -t $LOG_TAG "所有检查 URL 均无法访问，判断需要登录。尝试获取登录参数..."
-
+    
         # --- 获取登录参数和动态门户地址 ---
         logger -t $LOG_TAG "访问 $PROBE_URL 以获取跳转信息..."
         REDIRECT_HEADER_LINE=$(curl -s -I --connect-timeout $CONNECT_TIMEOUT --max-time $MAX_TIME $PROBE_URL | grep -i '^Location:')
-
+    
         if [ -z "$REDIRECT_HEADER_LINE" ]; then
             logger -t $LOG_TAG "错误：无法从 $PROBE_URL 获取重定向 Location Header。可能是网络问题或探测 URL 失效。"
             rm -f "$LOCK_FILE" # 出错退出前清理锁
@@ -124,7 +126,7 @@
         logger -t $LOG_TAG "获取到跳转 URL: $REDIRECT_URL"
         LOGIN_PORTAL_BASE_URL=$(echo "$REDIRECT_URL" | sed -n 's,^\(http://[^/]*\)/.*,\1,p')
         LOGIN_PORTAL_HOST_PORT=$(echo "$LOGIN_PORTAL_BASE_URL" | sed -n 's,^http://\([^/]*\),\1,p')
-
+    
         if [ -z "$LOGIN_PORTAL_BASE_URL" ] || [ -z "$LOGIN_PORTAL_HOST_PORT" ]; then
             logger -t $LOG_TAG "错误：无法从跳转 URL 中提取登录门户地址。"
             logger -t $LOG_TAG "原始跳转 URL: $REDIRECT_URL"
@@ -136,7 +138,7 @@
         BAS_IP=$(echo "$REDIRECT_URL" | sed -n 's/.*basip=\([^&]*\).*/\1/p')
         WLAN_AC_IP=$BAS_IP
         WLAN_USER_IP=$USER_IP
-
+    
         if [ -z "$WLAN_USER_IP" ] || [ -z "$WLAN_AC_IP" ]; then
             logger -t $LOG_TAG "错误：无法从跳转 URL 中提取 userip 或 basip。"
             logger -t $LOG_TAG "原始跳转 URL: $REDIRECT_URL"
@@ -144,11 +146,11 @@
             exit 1
         fi
         logger -t $LOG_TAG "提取参数成功: wlanUserIp=$WLAN_USER_IP, wlanAcIp=$WLAN_AC_IP"
-
+    
         # --- 构建 POST 数据和目标 URL ---
         POST_DATA="wlanAcName=&wlanAcIp=${WLAN_AC_IP}&wlanUserIp=${WLAN_USER_IP}&ssid=edu&passType=1&userName=${USERNAME}&userPwd=${PASSWORD}&saveUser=on"
         LOGIN_FULL_URL="${LOGIN_PORTAL_BASE_URL}${LOGIN_URL_PATH}"
-
+    
         # --- 发送登录请求 ---
         logger -t $LOG_TAG "向 $LOGIN_FULL_URL 发送登录请求..."
         LOGIN_RESPONSE=$(curl -s -X POST \
@@ -160,7 +162,7 @@
             --max-time $MAX_TIME \
             "$LOGIN_FULL_URL")
         LOGIN_CURL_CODE=$?
-
+    
         if [ $LOGIN_CURL_CODE -ne 0 ]; then
             logger -t $LOG_TAG "错误：登录请求失败 (curl 退出码: $LOGIN_CURL_CODE)。"
         else
@@ -189,7 +191,7 @@
     else
         logger -t $LOG_TAG "网络已连接，无需执行登录操作。"
     fi
-
+    
     # --- 清理锁 ---
     logger -t $LOG_TAG "脚本执行完毕。"
     rm -f "$LOCK_FILE"
@@ -243,7 +245,7 @@
         ```bash
         /etc/init.d/cron restart
         ```
-    现在，脚本将按照设定的频率自动检查网络状态并尝试登录。
+        现在，脚本将按照设定的频率自动检查网络状态并尝试登录。
 
 ## 5. 工作原理
 
