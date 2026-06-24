@@ -6,8 +6,10 @@ USERNAME='YOUR_USERNAME'  # 替换成你的校园网用户名
 PASSWORD='YOUR_PASSWORD'  # 替换成你的校园网密码
 
 # --- 常量与检查配置 ---
-# 检查网络状态的 URL 列表 (用空格分隔)
-CHECK_URLS="http://www.baidu.com/ https://cn.bing.com/ http://net-test.sorkai.com/"
+# 固定 204 探测地址：正常联网时应返回 HTTP 204，未认证被劫持时通常不会返回 204
+CHECK_204_URLS="http://detect.sorkai.com/generate_204"
+# HTTPS 备用探测列表：204 探测失败时作为备用判断，避免单一探测地址故障导致误登录
+CHECK_HTTPS_URLS="https://cn.bing.com/ https://net-test.sorkai.com/ https://www.baidu.com/"
 # 用于触发 302 跳转以获取登录参数的 URL (仍需访问以获取动态参数)
 PROBE_URL="http://www.msftconnecttest.com/redirect"
 # 登录接口相对于门户根路径的路径
@@ -28,6 +30,48 @@ if [ "$USERNAME" = "YOUR_USERNAME" ] || [ "$PASSWORD" = "YOUR_PASSWORD" ]; then
     logger -t $LOG_TAG "错误：请先在脚本中修改 USERNAME 和 PASSWORD 变量。"
     exit 1
 fi
+
+# --- 网络状态检测函数 ---
+# 返回 0 表示网络已连接，返回 1 表示需要登录或无法确认已联网
+check_online() {
+    for url in $CHECK_204_URLS; do
+        logger -t $LOG_TAG "204 探测 $url ..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout $CONNECT_TIMEOUT \
+            --max-time $MAX_TIME \
+            "$url")
+        CURL_EXIT_CODE=$?
+
+        if [ "$CURL_EXIT_CODE" -eq 0 ] && [ "$HTTP_CODE" = "204" ]; then
+            logger -t $LOG_TAG "204 探测成功：$url 返回 HTTP 204，网络已连接。"
+            return 0
+        fi
+
+        logger -t $LOG_TAG "204 探测未通过：$url (Curl Exit: $CURL_EXIT_CODE, HTTP Code: $HTTP_CODE)。"
+    done
+
+    for url in $CHECK_HTTPS_URLS; do
+        logger -t $LOG_TAG "HTTPS 备用探测 $url ..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout $CONNECT_TIMEOUT \
+            --max-time $MAX_TIME \
+            "$url")
+        CURL_EXIT_CODE=$?
+
+        if [ "$CURL_EXIT_CODE" -eq 0 ]; then
+            case "$HTTP_CODE" in
+                2*|3*)
+                    logger -t $LOG_TAG "HTTPS 备用探测成功：$url 返回 HTTP $HTTP_CODE，网络已连接。"
+                    return 0
+                    ;;
+            esac
+        fi
+
+        logger -t $LOG_TAG "HTTPS 备用探测未通过：$url (Curl Exit: $CURL_EXIT_CODE, HTTP Code: $HTTP_CODE)。"
+    done
+
+    return 1
+}
 
 # --- 锁机制 ---
 # 检查锁文件是否存在且对应进程是否仍在运行
@@ -52,26 +96,15 @@ trap 'rm -f "$LOCK_FILE"; exit $?' INT TERM EXIT HUP
 
 # --- 检查是否需要登录 ---
 logger -t $LOG_TAG "开始检查网络连接状态..."
-NEED_LOGIN=1 # 默认需要登录 (1 表示需要, 0 表示不需要)
-
-for url in $CHECK_URLS; do
-    logger -t $LOG_TAG "尝试访问 $url ..."
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout $CONNECT_TIMEOUT --max-time $MAX_TIME "$url")
-    CURL_EXIT_CODE=$?
-
-    # 如果 curl 成功 (退出码 0) 并且 HTTP 状态码是 200
-    if [ $CURL_EXIT_CODE -eq 0 ] && [ "$HTTP_CODE" -eq 200 ]; then
-        logger -t $LOG_TAG "成功访问 $url (HTTP 200)。网络已连接。"
-        NEED_LOGIN=0 # 设置为不需要登录
-        break # 只要有一个成功，就跳出循环
-    else
-        logger -t $LOG_TAG "访问 $url 失败 (Curl Exit: $CURL_EXIT_CODE, HTTP Code: $HTTP_CODE)。"
-    fi
-done
+if check_online; then
+    NEED_LOGIN=0 # 0 表示不需要登录
+else
+    NEED_LOGIN=1 # 1 表示需要登录
+fi
 
 # --- 如果需要登录，则执行登录流程 ---
 if [ $NEED_LOGIN -eq 1 ]; then
-    logger -t $LOG_TAG "所有检查 URL 均无法访问，判断需要登录。尝试获取登录参数..."
+    logger -t $LOG_TAG "网络状态检测未通过，判断需要登录。尝试获取登录参数..."
 
     # --- 获取登录参数和动态门户地址 ---
     # 访问探测 URL，获取 302 跳转的 Location Header
@@ -92,7 +125,6 @@ if [ $NEED_LOGIN -eq 1 ]; then
     LOGIN_PORTAL_BASE_URL=$(echo "$REDIRECT_URL" | sed -n 's,^\(http://[^/]*\)/.*,\1,p')
     # 动态提取登录门户的 Host[:Port]
     LOGIN_PORTAL_HOST_PORT=$(echo "$LOGIN_PORTAL_BASE_URL" | sed -n 's,^http://\([^/]*\),\1,p')
-
 
     if [ -z "$LOGIN_PORTAL_BASE_URL" ] || [ -z "$LOGIN_PORTAL_HOST_PORT" ]; then
         logger -t $LOG_TAG "错误：无法从跳转 URL 中提取登录门户地址。"
@@ -145,21 +177,8 @@ if [ $NEED_LOGIN -eq 1 ]; then
         # 等待一小段时间让网络状态生效
         sleep 3
         logger -t $LOG_TAG "登录请求已发送，再次验证网络连接..."
-        VERIFY_SUCCESS=0 # 0 表示失败/未验证, 1 表示成功
-        for url in $CHECK_URLS; do
-            logger -t $LOG_TAG "尝试访问 $url 进行验证..."
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout $CONNECT_TIMEOUT --max-time $MAX_TIME "$url")
-            CURL_EXIT_CODE=$?
-            if [ $CURL_EXIT_CODE -eq 0 ] && [ "$HTTP_CODE" -eq 200 ]; then
-                logger -t $LOG_TAG "验证成功：成功访问 $url (HTTP 200)。"
-                VERIFY_SUCCESS=1
-                break
-            else
-                logger -t $LOG_TAG "验证时访问 $url 失败 (Curl Exit: $CURL_EXIT_CODE, HTTP Code: $HTTP_CODE)。"
-            fi
-        done
 
-        if [ $VERIFY_SUCCESS -eq 1 ]; then
+        if check_online; then
             logger -t $LOG_TAG "登录流程完成，网络已连接。"
         else
             logger -t $LOG_TAG "登录后验证失败，网络可能仍未连接。"
