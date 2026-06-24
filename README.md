@@ -123,7 +123,7 @@ crontab -e
 
 脚本的核心流程如下：
 
-1. 执行网络连通性检测。
+1. 执行网络连通性检测，探测请求强制使用 IPv4。
    * 首先访问 `http://detect.sorkai.com/generate_204`，只有返回 HTTP 204 才直接认为已联网。
    * 204 探测失败后，再访问 `https://cn.bing.com/`、`https://net-test.sorkai.com/`、`https://www.baidu.com/`，返回 2xx 或 3xx 时认为已联网。
 2. 如果检测失败，访问 `http://www.msftconnecttest.com/redirect` 获取认证门户的 `Location`。
@@ -178,7 +178,7 @@ crontab -e
 
 ### 日志显示已经联网，但实际不能上网
 
-检查 204 探测地址是否在你的网络中被特殊处理，也可以临时调整 `CHECK_204_URLS` 或 `CHECK_HTTPS_URLS`。
+检查 204 探测地址是否在你的网络中被特殊处理，也可以临时调整 `CHECK_204_URLS` 或 `CHECK_HTTPS_URLS`。当前脚本只对联网探测请求使用 `curl -4`，认证门户访问和两次登录 POST 不强制 IP 版本。
 
 ### 无法获取 `Location`
 

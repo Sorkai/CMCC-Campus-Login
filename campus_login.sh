@@ -125,7 +125,7 @@ extract_frame_src() {
 check_online() {
     for url in $CHECK_204_URLS; do
         logger -t "$LOG_TAG" "204 探测 $url ..."
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        HTTP_CODE=$(curl -4 -s -o /dev/null -w "%{http_code}" \
             --connect-timeout "$CONNECT_TIMEOUT" \
             --max-time "$MAX_TIME" \
             "$url")
@@ -141,7 +141,7 @@ check_online() {
 
     for url in $CHECK_HTTPS_URLS; do
         logger -t "$LOG_TAG" "HTTPS 备用探测 $url ..."
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        HTTP_CODE=$(curl -4 -s -o /dev/null -w "%{http_code}" \
             --connect-timeout "$CONNECT_TIMEOUT" \
             --max-time "$MAX_TIME" \
             "$url")
