@@ -20,7 +20,7 @@ LOGIN_REDIRECT_URL_PATH="/portalLoginRedirect.wlan"
 CONNECT_TIMEOUT=5
 # 请求总超时时间 (秒)
 MAX_TIME=10
-# 浏览器 User-Agent，部分校园网认证页会按浏览器行为处理请求
+# 浏览器 User-Agent
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
 
 # 日志标签
@@ -36,6 +36,7 @@ if [ "$USERNAME" = "YOUR_USERNAME" ] || [ "$PASSWORD" = "YOUR_PASSWORD" ]; then
 fi
 
 # --- 工具函数 ---
+
 normalize_portal_url() {
     INPUT_URL="$1"
 
@@ -52,27 +53,75 @@ normalize_portal_url() {
     esac
 }
 
-extract_html_value() {
+extract_input_value() {
     FIELD_NAME="$1"
     HTML_TEXT="$2"
 
-    printf '%s' "$HTML_TEXT" | sed -n "s/.*name=\"$FIELD_NAME\"[^>]*value=\"\([^\"]*\)\".*/\1/p"
+    LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep "name[[:space:]]*=[[:space:]]*\"$FIELD_NAME\"" | head -n 1)
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep "name[[:space:]]*=[[:space:]]*'$FIELD_NAME'" | head -n 1)
+    fi
+
+    VALUE=$(printf '%s' "$LINE" | sed -n 's/.*value[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+
+    if [ -z "$VALUE" ]; then
+        VALUE=$(printf '%s' "$LINE" | sed -n "s/.*value[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p")
+    fi
+
+    echo "$VALUE"
 }
 
-extract_form_action_by_id() {
-    FORM_ID="$1"
+extract_form_action() {
+    FORM_NAME="$1"
     HTML_TEXT="$2"
 
-    ACTION=$(printf '%s' "$HTML_TEXT" | sed -n "s/.*<form[^>]*id=\"$FORM_ID\"[^>]*action=\"\([^\"]*\)\".*/\1/p")
+    LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^form' | grep "id[[:space:]]*=[[:space:]]*\"$FORM_NAME\"" | head -n 1)
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^form' | grep "name[[:space:]]*=[[:space:]]*\"$FORM_NAME\"" | head -n 1)
+    fi
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^form' | grep "id[[:space:]]*=[[:space:]]*'$FORM_NAME'" | head -n 1)
+    fi
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^form' | grep "name[[:space:]]*=[[:space:]]*'$FORM_NAME'" | head -n 1)
+    fi
+
+    ACTION=$(printf '%s' "$LINE" | sed -n 's/.*action[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+
     if [ -z "$ACTION" ]; then
-        ACTION=$(printf '%s' "$HTML_TEXT" | sed -n "s/.*<form[^>]*name=\"$FORM_ID\"[^>]*action=\"\([^\"]*\)\".*/\1/p")
+        ACTION=$(printf '%s' "$LINE" | sed -n "s/.*action[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p")
     fi
 
     echo "$ACTION"
 }
 
-# --- 网络状态检测函数 ---
-# 返回 0 表示网络已连接，返回 1 表示需要登录或无法确认已联网
+extract_frame_src() {
+    FRAME_NAME="$1"
+    HTML_TEXT="$2"
+
+    LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^frame' | grep "name[[:space:]]*=[[:space:]]*\"$FRAME_NAME\"" | head -n 1)
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^frame' | grep "name[[:space:]]*=[[:space:]]*'$FRAME_NAME'" | head -n 1)
+    fi
+
+    if [ -z "$LINE" ]; then
+        LINE=$(printf '%s' "$HTML_TEXT" | tr '<' '\n' | grep '^frame' | grep 'portal\.wlan' | head -n 1)
+    fi
+
+    SRC=$(printf '%s' "$LINE" | sed -n 's/.*src[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+
+    if [ -z "$SRC" ]; then
+        SRC=$(printf '%s' "$LINE" | sed -n "s/.*src[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p")
+    fi
+
+    echo "$SRC"
+}
+
 check_online() {
     for url in $CHECK_204_URLS; do
         logger -t "$LOG_TAG" "204 探测 $url ..."
@@ -140,7 +189,6 @@ fi
 if [ "$NEED_LOGIN" -eq 1 ]; then
     logger -t "$LOG_TAG" "网络状态检测未通过，判断需要登录。尝试获取登录参数..."
 
-    # --- 获取登录参数和动态门户地址 ---
     logger -t "$LOG_TAG" "访问 $PROBE_URL 以获取跳转信息..."
     REDIRECT_HEADER_LINE=$(curl -s -I \
         -A "$USER_AGENT" \
@@ -149,7 +197,7 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
         "$PROBE_URL" | grep -i '^Location:' | tail -n 1)
 
     if [ -z "$REDIRECT_HEADER_LINE" ]; then
-        logger -t "$LOG_TAG" "错误：无法从 $PROBE_URL 获取重定向 Location Header。可能是网络问题或探测 URL 失效。"
+        logger -t "$LOG_TAG" "错误：无法从 $PROBE_URL 获取重定向 Location Header。"
         rm -f "$LOCK_FILE"
         exit 1
     fi
@@ -183,14 +231,45 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
     logger -t "$LOG_TAG" "动态获取到登录门户地址: $LOGIN_PORTAL_BASE_URL (Host: $LOGIN_PORTAL_HOST_PORT)"
     logger -t "$LOG_TAG" "提取参数成功: wlanUserIp=$WLAN_USER_IP, wlanAcIp=$WLAN_AC_IP"
 
-    # --- 获取真实登录页，提取新版隐藏字段 portalLogin 和动态 form action ---
-    LOGIN_PAGE_URL="${LOGIN_PORTAL_BASE_URL}/portal.wlan?wlanacname=&wlanacip=${WLAN_AC_IP}&wlanuserip=${WLAN_USER_IP}&ssid=edu"
-    logger -t "$LOG_TAG" "访问登录页 $LOGIN_PAGE_URL 以提取隐藏参数..."
+    # --- 模拟浏览器访问 index.php -> indexs.wlan -> portal.wlan ---
+    logger -t "$LOG_TAG" "访问门户跳转页 $REDIRECT_URL ..."
+    INDEX_REDIRECT_HEADER=$(curl -s -I \
+        -A "$USER_AGENT" \
+        -H "Host: ${LOGIN_PORTAL_HOST_PORT}" \
+        --connect-timeout "$CONNECT_TIMEOUT" \
+        --max-time "$MAX_TIME" \
+        "$REDIRECT_URL" | grep -i '^Location:' | tail -n 1)
 
-    LOGIN_PAGE=$(curl -s \
+    if [ -n "$INDEX_REDIRECT_HEADER" ]; then
+        INDEX_REDIRECT_URL=$(echo "$INDEX_REDIRECT_HEADER" | sed -e 's/^[Ll]ocation: //i' -e 's/\r$//')
+        INDEX_URL=$(normalize_portal_url "$INDEX_REDIRECT_URL")
+    else
+        INDEX_URL="$REDIRECT_URL"
+    fi
+
+    logger -t "$LOG_TAG" "访问登录框架页 $INDEX_URL ..."
+    INDEX_PAGE=$(curl -s \
         -A "$USER_AGENT" \
         -H "Host: ${LOGIN_PORTAL_HOST_PORT}" \
         -H "Referer: ${REDIRECT_URL}" \
+        --connect-timeout "$CONNECT_TIMEOUT" \
+        --max-time "$MAX_TIME" \
+        "$INDEX_URL")
+
+    FRAME_SRC=$(extract_frame_src "input" "$INDEX_PAGE")
+
+    if [ -n "$FRAME_SRC" ]; then
+        LOGIN_PAGE_URL=$(normalize_portal_url "$FRAME_SRC")
+    else
+        LOGIN_PAGE_URL="${LOGIN_PORTAL_BASE_URL}/portal.wlan?wlanacname=&wlanacip=${WLAN_AC_IP}&wlanuserip=${WLAN_USER_IP}&ssid=edu"
+        logger -t "$LOG_TAG" "警告：未从框架页提取 frame src，使用默认登录页: $LOGIN_PAGE_URL"
+    fi
+
+    logger -t "$LOG_TAG" "访问登录页 $LOGIN_PAGE_URL 以提取隐藏参数..."
+    LOGIN_PAGE=$(curl -s \
+        -A "$USER_AGENT" \
+        -H "Host: ${LOGIN_PORTAL_HOST_PORT}" \
+        -H "Referer: ${INDEX_URL}" \
         --connect-timeout "$CONNECT_TIMEOUT" \
         --max-time "$MAX_TIME" \
         "$LOGIN_PAGE_URL")
@@ -202,12 +281,13 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
         exit 1
     fi
 
-    LOGIN_PAGE_ONE_LINE=$(printf '%s' "$LOGIN_PAGE" | tr '\r\n' '  ')
-    PORTAL_LOGIN=$(extract_html_value "portalLogin" "$LOGIN_PAGE_ONE_LINE")
-    LOGIN_FORM_ACTION=$(extract_form_action_by_id "loginForm" "$LOGIN_PAGE_ONE_LINE")
+    PORTAL_LOGIN=$(extract_input_value "portalLogin" "$LOGIN_PAGE")
+    LOGIN_FORM_ACTION=$(extract_form_action "loginForm" "$LOGIN_PAGE")
+    PASS_TYPE=$(extract_input_value "passType" "$LOGIN_PAGE")
+    SSID_VALUE=$(extract_input_value "ssid" "$LOGIN_PAGE")
 
     if [ -z "$PORTAL_LOGIN" ]; then
-        logger -t "$LOG_TAG" "错误：无法从登录页中提取 portalLogin 隐藏参数。"
+        logger -t "$LOG_TAG" "错误：无法从登录页中提取 portalLogin 隐藏参数。请检查登录页 HTML 是否变化。"
         rm -f "$LOCK_FILE"
         exit 1
     fi
@@ -217,11 +297,14 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
         logger -t "$LOG_TAG" "警告：无法从登录页提取 form action，使用默认登录路径: $LOGIN_FORM_ACTION"
     fi
 
+    [ -z "$PASS_TYPE" ] && PASS_TYPE="1"
+    [ -z "$SSID_VALUE" ] && SSID_VALUE="edu"
+
     LOGIN_FULL_URL=$(normalize_portal_url "$LOGIN_FORM_ACTION")
     logger -t "$LOG_TAG" "提取新版登录参数成功：portalLogin 已获取，loginUrl=$LOGIN_FULL_URL"
 
-    # --- 第一次 POST：提交账号密码到 portalLogin.wlan ---
-    POST_DATA="wlanAcName=&wlanAcIp=${WLAN_AC_IP}&wlanUserIp=${WLAN_USER_IP}&ssid=edu&portalLogin=${PORTAL_LOGIN}&passType=1&userName=${USERNAME}&userPwd=${PASSWORD}&saveUser=on"
+    # --- 第一次 POST：提交账号密码 ---
+    POST_DATA="wlanAcName=&wlanAcIp=${WLAN_AC_IP}&wlanUserIp=${WLAN_USER_IP}&ssid=${SSID_VALUE}&portalLogin=${PORTAL_LOGIN}&passType=${PASS_TYPE}&userName=${USERNAME}&userPwd=${PASSWORD}&saveUser=on"
 
     logger -t "$LOG_TAG" "向 $LOGIN_FULL_URL 发送第一次登录请求..."
     LOGIN_RESPONSE=$(curl -s -X POST \
@@ -244,8 +327,8 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
     fi
 
     # --- 第二次 POST：模拟浏览器自动提交 portalLoginRedirect.wlan ---
-    LOGIN_RESPONSE_ONE_LINE=$(printf '%s' "$LOGIN_RESPONSE" | tr '\r\n' '  ')
-    REDIRECT_FORM_ACTION=$(extract_form_action_by_id "submitForm" "$LOGIN_RESPONSE_ONE_LINE")
+    REDIRECT_FORM_ACTION=$(extract_form_action "submitForm" "$LOGIN_RESPONSE")
+
     if [ -z "$REDIRECT_FORM_ACTION" ]; then
         REDIRECT_FORM_ACTION="$LOGIN_REDIRECT_URL_PATH"
         logger -t "$LOG_TAG" "警告：无法从第一次登录响应中提取 submitForm action，使用默认跳转确认路径: $REDIRECT_FORM_ACTION"
@@ -253,24 +336,30 @@ if [ "$NEED_LOGIN" -eq 1 ]; then
 
     LOGIN_REDIRECT_FULL_URL=$(normalize_portal_url "$REDIRECT_FORM_ACTION")
 
-    VALID_PERIOD=$(extract_html_value "validperiod" "$LOGIN_RESPONSE_ONE_LINE")
-    IS_LOCAL_USER=$(extract_html_value "isLocalUser" "$LOGIN_RESPONSE_ONE_LINE")
-    PASS_TYPE=$(extract_html_value "passType" "$LOGIN_RESPONSE_ONE_LINE")
-    ONLINE_NUM=$(extract_html_value "onlineNum" "$LOGIN_RESPONSE_ONE_LINE")
-    LOGON_SESS_ID=$(extract_html_value "logonsessid" "$LOGIN_RESPONSE_ONE_LINE")
-    WLAN_AC_NAME=$(extract_html_value "wlanAcName" "$LOGIN_RESPONSE_ONE_LINE")
-    BOOK_TIME=$(extract_html_value "booktime" "$LOGIN_RESPONSE_ONE_LINE")
-    AUTO_LOGIN=$(extract_html_value "AUTO_LOGIN" "$LOGIN_RESPONSE_ONE_LINE")
-    SSID_VALUE=$(extract_html_value "ssid" "$LOGIN_RESPONSE_ONE_LINE")
-    ENCRY_USER=$(extract_html_value "encryUser" "$LOGIN_RESPONSE_ONE_LINE")
-    COOKIES_VALUE=$(extract_html_value "cookies" "$LOGIN_RESPONSE_ONE_LINE")
+    VALID_PERIOD=$(extract_input_value "validperiod" "$LOGIN_RESPONSE")
+    REDIRECT_WLAN_AC_IP=$(extract_input_value "wlanAcIp" "$LOGIN_RESPONSE")
+    IS_LOCAL_USER=$(extract_input_value "isLocalUser" "$LOGIN_RESPONSE")
+    REDIRECT_PASS_TYPE=$(extract_input_value "passType" "$LOGIN_RESPONSE")
+    ONLINE_NUM=$(extract_input_value "onlineNum" "$LOGIN_RESPONSE")
+    LOGON_SESS_ID=$(extract_input_value "logonsessid" "$LOGIN_RESPONSE")
+    WLAN_AC_NAME=$(extract_input_value "wlanAcName" "$LOGIN_RESPONSE")
+    BOOK_TIME=$(extract_input_value "booktime" "$LOGIN_RESPONSE")
+    REDIRECT_WLAN_USER_IP=$(extract_input_value "wlanUserIp" "$LOGIN_RESPONSE")
+    AUTO_LOGIN=$(extract_input_value "AUTO_LOGIN" "$LOGIN_RESPONSE")
+    REDIRECT_SSID=$(extract_input_value "ssid" "$LOGIN_RESPONSE")
+    REDIRECT_USERNAME=$(extract_input_value "userName" "$LOGIN_RESPONSE")
+    ENCRY_USER=$(extract_input_value "encryUser" "$LOGIN_RESPONSE")
+    COOKIES_VALUE=$(extract_input_value "cookies" "$LOGIN_RESPONSE")
 
-    [ -z "$PASS_TYPE" ] && PASS_TYPE="1"
+    [ -z "$REDIRECT_WLAN_AC_IP" ] && REDIRECT_WLAN_AC_IP="$WLAN_AC_IP"
+    [ -z "$REDIRECT_PASS_TYPE" ] && REDIRECT_PASS_TYPE="$PASS_TYPE"
     [ -z "$ONLINE_NUM" ] && ONLINE_NUM="2"
+    [ -z "$REDIRECT_WLAN_USER_IP" ] && REDIRECT_WLAN_USER_IP="$WLAN_USER_IP"
     [ -z "$AUTO_LOGIN" ] && AUTO_LOGIN="true"
-    [ -z "$SSID_VALUE" ] && SSID_VALUE="edu"
+    [ -z "$REDIRECT_SSID" ] && REDIRECT_SSID="$SSID_VALUE"
+    [ -z "$REDIRECT_USERNAME" ] && REDIRECT_USERNAME="$USERNAME"
 
-    REDIRECT_POST_DATA="validperiod=${VALID_PERIOD}&wlanAcIp=${WLAN_AC_IP}&isLocalUser=${IS_LOCAL_USER}&passType=${PASS_TYPE}&onlineNum=${ONLINE_NUM}&logonsessid=${LOGON_SESS_ID}&wlanAcName=${WLAN_AC_NAME}&booktime=${BOOK_TIME}&wlanUserIp=${WLAN_USER_IP}&AUTO_LOGIN=${AUTO_LOGIN}&ssid=${SSID_VALUE}&userName=${USERNAME}&encryUser=${ENCRY_USER}&cookies=${COOKIES_VALUE}"
+    REDIRECT_POST_DATA="validperiod=${VALID_PERIOD}&wlanAcIp=${REDIRECT_WLAN_AC_IP}&isLocalUser=${IS_LOCAL_USER}&passType=${REDIRECT_PASS_TYPE}&onlineNum=${ONLINE_NUM}&logonsessid=${LOGON_SESS_ID}&wlanAcName=${WLAN_AC_NAME}&booktime=${BOOK_TIME}&wlanUserIp=${REDIRECT_WLAN_USER_IP}&AUTO_LOGIN=${AUTO_LOGIN}&ssid=${REDIRECT_SSID}&userName=${REDIRECT_USERNAME}&encryUser=${ENCRY_USER}&cookies=${COOKIES_VALUE}"
 
     logger -t "$LOG_TAG" "向 $LOGIN_REDIRECT_FULL_URL 发送第二次登录确认请求..."
     REDIRECT_RESPONSE=$(curl -s -X POST \

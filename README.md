@@ -13,7 +13,9 @@ OpenWrt 校园网 CMCC Web 认证自动登录脚本。
 * 自动检测当前网络是否已经联网，避免重复提交登录请求。
 * 使用 HTTP 204 探测加 HTTPS 备用探测，降低被认证页 HTTP 200 误判为联网的概率。
 * 从未认证重定向地址中动态提取门户地址、`userip` 和 `basip`。
-* 先 GET `portal.wlan` 登录页，提取隐藏参数 `portalLogin` 和带时间戳的表单 `action`。
+* 模拟浏览器先访问门户入口，再进入 `indexs.wlan` 框架页，解析 frame 中的 `portal.wlan` 登录页。
+* 从登录页提取隐藏参数 `portalLogin` 和带时间戳的表单 `action`。
+* HTML 提取逻辑兼容 `value="xxx"`、`value = "xxx"`、单引号和双引号写法。
 * 第一次 POST 使用登录页真实 `form action`，提交到 `portalLogin.wlan?...`。
 * 第一次响应后继续模拟浏览器自动提交 `portalLoginRedirect.wlan`，补齐第二次确认 POST。
 * 使用浏览器 User-Agent、`Origin`、`Referer`、`Host` 等请求头，尽量贴近浏览器请求。
@@ -26,9 +28,11 @@ OpenWrt 校园网 CMCC Web 认证自动登录脚本。
 
 1. 未认证时访问 HTTP 探测地址会被 302 跳转到认证门户。
 2. 跳转 URL 中包含 `userip` 和 `basip`。
-3. 登录页为 `portal.wlan`，页面中包含隐藏字段 `portalLogin`。
-4. 登录表单会提交到 `portalLogin.wlan`，并且 `action` 可能带时间戳参数。
-5. 首次登录响应中还有一个自动提交表单，需要再次 POST 到 `portalLoginRedirect.wlan` 或响应中的确认 `action`。
+3. 门户入口会跳到类似 `indexs.wlan` 的框架页。
+4. 框架页中包含指向 `portal.wlan` 的 `frame src`。
+5. `portal.wlan` 页面中包含隐藏字段 `portalLogin`。
+6. 登录表单会提交到 `portalLogin.wlan`，并且 `action` 可能带时间戳参数。
+7. 首次登录响应中还有一个自动提交表单，需要再次 POST 到 `portalLoginRedirect.wlan` 或响应中的确认 `action`。
 
 如果你的校园网仍是旧版一次 POST 流程，或字段名不是这些值，需要按实际浏览器请求调整 `campus_login.sh`。
 
@@ -128,16 +132,18 @@ crontab -e
    * 门户 `Host`。
    * `userip`，作为 `wlanUserIp`。
    * `basip`，作为 `wlanAcIp`。
-4. 拼出登录页地址：
+4. 访问门户跳转页，按响应中的 `Location` 进入登录框架页。常见路径类似：
 
    ```text
-   /portal.wlan?wlanacname=&wlanacip=<basip>&wlanuserip=<userip>&ssid=edu
+   index.php -> indexs.wlan
    ```
 
-5. GET 登录页，提取：
+5. 从框架页解析 `name="input"` 的 frame，或兜底查找包含 `portal.wlan` 的 frame，并拼出真实登录页地址。
+6. GET 登录页，提取：
    * 隐藏字段 `portalLogin`。
    * `loginForm` 的 `action`，通常是带时间戳的 `portalLogin.wlan?...`。
-6. 第一次 POST 到登录表单真实 `action`，提交：
+   * `passType` 和 `ssid`，提取不到时分别回退到 `1` 和 `edu`。
+7. 第一次 POST 到登录表单真实 `action`，提交：
    * `wlanAcIp`
    * `wlanUserIp`
    * `ssid`
@@ -146,9 +152,9 @@ crontab -e
    * `userName`
    * `userPwd`
    * `saveUser`
-7. 解析第一次响应中的自动提交表单，提取 `submitForm` 的 `action` 和隐藏字段。
-8. 第二次 POST 到 `portalLoginRedirect.wlan` 或响应中给出的确认 `action`，提交 `validperiod`、`logonsessid`、`encryUser`、`cookies` 等确认字段。
-9. 等待 3 秒后再次执行网络检测，确认是否已经联网。
+8. 解析第一次响应中的自动提交表单，提取 `submitForm` 的 `action` 和隐藏字段。
+9. 第二次 POST 到 `portalLoginRedirect.wlan` 或响应中给出的确认 `action`，提交 `validperiod`、`logonsessid`、`encryUser`、`cookies` 等确认字段。
+10. 等待 3 秒后再次执行网络检测，确认是否已经联网。
 
 ## 可调整参数
 
@@ -190,7 +196,11 @@ crontab -e
 <input name="portalLogin" ...>
 ```
 
-如果字段名变化，需要同步修改 `extract_html_value "portalLogin"` 的调用。
+脚本已经兼容 `value="xxx"` 和 `value = "xxx"`。如果字段名变化，需要同步修改 `extract_input_value "portalLogin"` 的调用。
+
+### 无法从框架页提取 `portal.wlan`
+
+脚本会优先查找 `name="input"` 的 frame，再兜底查找包含 `portal.wlan` 的 frame。如果你的门户使用 `iframe`、其它 frame 名称，或直接返回登录页，需要按实际 HTML 修改 `extract_frame_src` 或登录页兜底路径。
 
 ### 第一次 POST 成功但仍未联网
 
